@@ -1,0 +1,417 @@
+--[[
+    Title: 999ตัวตึง | ONE BUTTON + RGB + Anti-Idle
+    Author: 999ตัวตึง (RGB Glow + Safe Anti-Idle)
+]]
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local StarterGui = game:GetService("StarterGui")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+
+StarterGui:SetCore("SendNotification", {
+    Title = "999ตัวตึง", Text = "RGB ONE BUTTON + Anti-Idle Ready! 🌈", Duration = 2
+})
+
+-- ScreenGui
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "999SolverRGB"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.DisplayOrder = 999999
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Main Frame (RGB Glow)
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.fromOffset(340, 300)
+MainFrame.Position = UDim2.fromScale(0.5, 0.5) - UDim2.fromOffset(170, 150)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 15)
+UICorner.Parent = MainFrame
+
+-- 🔥 RGB Stroke Effect
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Thickness = 3
+UIStroke.Parent = MainFrame
+local hue = 0
+RunService.Heartbeat:Connect(function(delta)
+    hue = (hue + delta * 50) % 360
+    UIStroke.Color = Color3.fromHSV(hue / 360, 1, 1)
+end)
+
+-- Title (Rainbow Text)
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Text = "🌈 999ตัวตึง | ONE BUTTON AUTO"
+TitleLabel.Size = UDim2.new(1, 0, 0, 35)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.TextSize = 16
+TitleLabel.Parent = MainFrame
+RunService.Heartbeat:Connect(function(delta)
+    TitleLabel.TextColor3 = Color3.fromHSV((hue + 180) / 360, 1, 1)
+end)
+
+-- Close Button
+local CloseButton = Instance.new("TextButton")
+CloseButton.Text = "✕"
+CloseButton.Size = UDim2.fromOffset(35, 35)
+CloseButton.Position = UDim2.new(1, -38, 0, 0)
+CloseButton.BackgroundTransparency = 1
+CloseButton.TextColor3 = Color3.fromRGB(255, 100, 100)
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.TextSize = 18
+CloseButton.Parent = MainFrame
+
+-- 🔥 ONE BUTTON AUTO (RGB Pulsing)
+local AutoButton = Instance.new("TextButton")
+AutoButton.Text = "🚀 ONE CLICK AUTO"
+AutoButton.Size = UDim2.new(0.9, 0, 0, 50)
+AutoButton.Position = UDim2.new(0.05, 0, 0.18, 0)
+AutoButton.BackgroundColor3 = Color3.fromRGB(255, 100, 100)
+AutoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoButton.Font = Enum.Font.GothamBold
+AutoButton.TextSize = 16
+AutoButton.TextScaled = true
+AutoButton.Parent = MainFrame
+local AutoCorner = Instance.new("UICorner")
+AutoCorner.CornerRadius = UDim.new(0, 12)
+AutoCorner.Parent = AutoButton
+
+local AutoStroke = Instance.new("UIStroke")
+AutoStroke.Thickness = 2
+AutoStroke.Parent = AutoButton
+RunService.Heartbeat:Connect(function(delta)
+    AutoStroke.Color = Color3.fromHSV(hue / 360, 0.8, 1)
+end)
+
+-- Anti-Idle Button (RGB)
+local AntiIdleButton = Instance.new("TextButton")
+AntiIdleButton.Text = "🛡️ Anti-Idle OFF"
+AntiIdleButton.Size = UDim2.new(0.43, 0, 0, 35)
+AntiIdleButton.Position = UDim2.new(0.05, 0, 0.38, 0)
+AntiIdleButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+AntiIdleButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+AntiIdleButton.Font = Enum.Font.GothamBold
+AntiIdleButton.TextSize = 13
+AntiIdleButton.TextScaled = true
+AntiIdleButton.Parent = MainFrame
+local AntiCorner = Instance.new("UICorner")
+AntiCorner.CornerRadius = UDim.new(0, 10)
+AntiCorner.Parent = AntiIdleButton
+
+local AntiStroke = Instance.new("UIStroke")
+AntiStroke.Thickness = 2
+AntiStroke.Parent = AntiIdleButton
+
+-- Input Display
+local InputDisplay = Instance.new("TextBox")
+InputDisplay.PlaceholderText = "อักษรที่ดึงได้จะแสดงที่นี่..."
+InputDisplay.Size = UDim2.new(0.9, 0, 0, 35)
+InputDisplay.Position = UDim2.new(0.05, 0, 0.52, 0)
+InputDisplay.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+InputDisplay.TextColor3 = Color3.fromRGB(255, 255, 255)
+InputDisplay.Font = Enum.Font.GothamBold
+InputDisplay.TextSize = 16
+InputDisplay.TextXAlignment = Enum.TextXAlignment.Center
+InputDisplay.Parent = MainFrame
+local InputCorner = Instance.new("UICorner")
+InputCorner.CornerRadius = UDim.new(0, 8)
+InputCorner.Parent = InputDisplay
+
+-- Max Length
+local MaxLengthBox = Instance.new("TextBox")
+MaxLengthBox.PlaceholderText = "Max Length (12)"
+MaxLengthBox.Text = "12"
+MaxLengthBox.Size = UDim2.new(0.43, 0, 0, 30)
+MaxLengthBox.Position = UDim2.new(0.05, 0, 0.66, 0)
+MaxLengthBox.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+MaxLengthBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+MaxLengthBox.Font = Enum.Font.Gotham
+MaxLengthBox.TextSize = 14
+MaxLengthBox.Parent = MainFrame
+local MaxCorner = Instance.new("UICorner")
+MaxCorner.CornerRadius = UDim.new(0, 8)
+MaxCorner.Parent = MaxLengthBox
+
+-- Result Label
+local ResultLabel = Instance.new("TextLabel")
+ResultLabel.Text = "กำลังโหลดฐานข้อมูล..."
+ResultLabel.Size = UDim2.new(0.9, 0, 0, 40)
+ResultLabel.Position = UDim2.new(0.05, 0, 0.78, 0)
+ResultLabel.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+ResultLabel.TextColor3 = Color3.fromRGB(255, 255, 100)
+ResultLabel.Font = Enum.Font.GothamBold
+ResultLabel.TextSize = 14
+ResultLabel.TextScaled = true
+ResultLabel.TextXAlignment = Enum.TextXAlignment.Center
+ResultLabel.Parent = MainFrame
+local ResultCorner = Instance.new("UICorner")
+ResultCorner.CornerRadius = UDim.new(0, 10)
+ResultCorner.Parent = ResultLabel
+
+-- Speed Slider
+local SpeedLabel = Instance.new("TextLabel")
+SpeedLabel.Text = "ความเร็ว: 0.08s"
+SpeedLabel.Size = UDim2.new(0.9, 0, 0, 20)
+SpeedLabel.Position = UDim2.new(0.05, 0, 0.95, -5)
+SpeedLabel.BackgroundTransparency = 1
+SpeedLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+SpeedLabel.Font = Enum.Font.Gotham
+SpeedLabel.TextSize = 12
+SpeedLabel.Parent = MainFrame
+
+local SpeedSlider = Instance.new("Frame")
+SpeedSlider.Size = UDim2.new(0.9, 0, 0, 16)
+SpeedSlider.Position = UDim2.new(0.05, 0, 1, -22)
+SpeedSlider.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+SpeedSlider.Parent = MainFrame
+local SliderCorner = Instance.new("UICorner")
+SliderCorner.CornerRadius = UDim.new(0, 8)
+SliderCorner.Parent = SpeedSlider
+
+local SliderFill = Instance.new("Frame")
+SliderFill.Size = UDim2.new(0.5, 0, 1, 0)
+SliderFill.BackgroundColor3 = Color3.fromRGB(0, 255, 200)
+SliderFill.BorderSizePixel = 0
+SliderFill.Parent = SpeedSlider
+local FillCorner = Instance.new("UICorner")
+FillCorner.CornerRadius = UDim.new(0, 8)
+FillCorner.Parent = SliderFill
+
+-- Variables
+local WordDatabase = {}
+local currentWord = ""
+local baseTypeSpeed = 0.08
+local isDBLoaded = false
+local maxLength = 12
+local isProcessing = false
+local isAntiIdleActive = false
+local antiIdleConnection = nil
+
+-- Safe Click
+local function addSafeClick(btn)
+    local originalSize = btn.Size
+    btn.MouseButton1Down:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.1), {
+            Size = UDim2.new(originalSize.X.Scale * 0.95, originalSize.X.Offset, 
+                           originalSize.Y.Scale * 0.95, originalSize.Y.Offset)
+        }):Play()
+    end)
+    btn.MouseButton1Up:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.1), {Size = originalSize}):Play()
+    end)
+end
+
+-- 🔥 Anti-Idle (ปุ่มปลอดภัย 100%)
+local function startAntiIdle()
+    if antiIdleConnection then return end
+    isAntiIdleActive = true
+    AntiIdleButton.Text = "🛡️ Anti-Idle ON"
+    AntiIdleButton.BackgroundColor3 = Color3.fromRGB(100, 255, 100)
+    
+    local safeKeys = {"ScrollLock", "Pause", "Insert"}
+    antiIdleConnection = RunService.Heartbeat:Connect(function()
+        if not isAntiIdleActive then return end
+        if math.random() < 0.01 then
+            local key = safeKeys[math.random(1, #safeKeys)]
+            task.spawn(function()
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode[key], false, game)
+                task.wait(0.03)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode[key], false, game)
+            end)
+        end
+    end)
+end
+
+local function stopAntiIdle()
+    isAntiIdleActive = false
+    if antiIdleConnection then
+        antiIdleConnection:Disconnect()
+        antiIdleConnection = nil
+    end
+    AntiIdleButton.Text = "🛡️ Anti-Idle OFF"
+    AntiIdleButton.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+end
+
+-- 🔥 ฟังก์ชันหลัก (เหมือนเดิม)
+local function extractWordFromGame()
+    local inGame = LocalPlayer.PlayerGui:FindFirstChild("InGame")
+    if not inGame then return nil end
+    local frame = inGame:FindFirstChild("Frame")
+    if not frame then return nil end
+    local currentWordFolder = frame:FindFirstChild("CurrentWord")
+    if not currentWordFolder then return nil end
+    
+    local letters = {}
+    for _, child in pairs(currentWordFolder:GetChildren()) do
+        local num = tonumber(child.Name)
+        if num then
+            local letter = child:FindFirstChild("Letter")
+            if letter and letter:IsA("TextLabel") then
+                letters[num] = letter.Text
+            end
+        end
+    end
+    
+    local sortedLetters = {}
+    for i = 1, 20 do
+        if letters[i] then table.insert(sortedLetters, letters[i]) end
+    end
+    
+    return table.concat(sortedLetters, ""):lower()
+end
+
+local function findWord(prefix)
+    maxLength = tonumber(MaxLengthBox.Text) or 12
+    local candidates = {}
+    for _, word in ipairs(WordDatabase) do
+        if #word <= maxLength and word:sub(1, #prefix) == prefix then
+            table.insert(candidates, word)
+            if #candidates >= 50 then break end
+        end
+    end
+    return #candidates > 0 and candidates[math.random(1, #candidates)] or nil
+end
+
+local function getRandomDelay(baseSpeed)
+    return math.max(0.008, baseSpeed * (0.5 + math.random() * 1) * (0.6 + math.random() * 0.8) + math.random() * 0.015 - 0.0075)
+end
+
+local function autoType(prefix, fullWord)
+    local remaining = fullWord:sub(#prefix + 1)
+    ResultLabel.Text = "พิมพ์ " .. remaining:upper() .. " ⌨️"
+    
+    task.spawn(function()
+        for i = 1, #remaining do
+            local char = remaining:sub(i,i):upper()
+            pcall(function()
+                local holdTime = math.random() > 0.7 and math.random() * 0.03 or 0
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode[char], false, game)
+                task.wait(holdTime)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode[char], false, game)
+            end)
+            task.wait(getRandomDelay(baseTypeSpeed))
+            if math.random() > 0.95 then task.wait(math.random() * 0.1) end
+        end
+        
+        task.wait(getRandomDelay(0.1))
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+        task.wait(0.03)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+        
+        ResultLabel.Text = remaining:upper() .. " ✅ เสร็จ!"
+    end)
+end
+
+-- 🔥 ONE BUTTON AUTO
+AutoButton.MouseButton1Click:Connect(function()
+    if isProcessing then return end
+    isProcessing = true
+    
+    AutoButton.Text = "🔄 ทำงาน..."
+    AutoButton.BackgroundColor3 = Color3.fromRGB(255, 200, 0)
+    
+    task.spawn(function()
+        ResultLabel.Text = "🔍 ดึงอักษร..."
+        local extracted = extractWordFromGame()
+        
+        if extracted and #extracted > 0 then
+            InputDisplay.Text = extracted
+            InputDisplay.TextColor3 = Color3.fromRGB(0, 255, 0)
+            
+            ResultLabel.Text = "🎯 หาคำ..."
+            task.wait(0.1)
+            currentWord = findWord(extracted)
+            
+            if currentWord then
+                local remaining = currentWord:sub(#extracted + 1)
+                ResultLabel.Text = string.format("🎯 %s → %s", extracted:upper(), remaining:upper())
+                setclipboard(currentWord)
+                task.wait(0.3)
+                autoType(extracted, currentWord)
+            else
+                ResultLabel.Text = "❌ ไม่เจอคำ!"
+            end
+        else
+            ResultLabel.Text = "❌ ไม่พบอักษร!"
+        end
+        
+        task.wait(2)
+        AutoButton.Text = "🚀 ONE CLICK AUTO"
+        AutoButton.BackgroundColor3 = Color3.fromRGB(255, 100, 100)
+        isProcessing = false
+    end)
+end)
+
+-- Anti-Idle Toggle
+AntiIdleButton.MouseButton1Click:Connect(function()
+    if isAntiIdleActive then
+        stopAntiIdle()
+    else
+        startAntiIdle()
+    end
+end)
+
+-- Load Database
+task.spawn(function()
+    ResultLabel.Text = "ดาวน์โหลดฐานข้อมูล..."
+    local success, result = pcall(game.HttpGet, game, "https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt")
+    
+    if success then
+        local wordCount = 0
+        for word in result:gmatch("[a-zA-Z]+") do
+            if #word >= 3 and #word <= 20 then
+                table.insert(WordDatabase, word:lower())
+                wordCount = wordCount + 1
+                if wordCount % 50000 == 0 then
+                    ResultLabel.Text = "กรอง "..wordCount.." คำ..."
+                end
+            end
+        end
+        isDBLoaded = true
+        ResultLabel.Text = "✅ พร้อม! กด 🚀"
+    else
+        local backup = {"apple","banana","cat","dog","umbrella","house","water","table","chair","book"}
+        for _, w in ipairs(backup) do table.insert(WordDatabase, w) end
+        isDBLoaded = true
+        ResultLabel.Text = "✅ ฐานสำรองพร้อม!"
+    end
+end)
+
+-- Speed Slider
+local UIS = UserInputService
+SpeedSlider.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        local connection
+        connection = UIS.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement then
+                local relX = math.clamp((input.Position.X - SpeedSlider.AbsolutePosition.X) / SpeedSlider.AbsoluteSize.X, 0, 1)
+                SliderFill.Size = UDim2.new(relX, 0, 1, 0)
+                baseTypeSpeed = 0.03 + (relX * 0.12)
+                SpeedLabel.Text = "ความเร็ว: " .. string.format("%.2fs", baseTypeSpeed)
+            end
+        end)
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then connection:Disconnect() end
+        end)
+    end
+end)
+
+-- Events
+CloseButton.MouseButton1Click:Connect(function() 
+    stopAntiIdle()
+    ScreenGui:Destroy() 
+end)
+
+addSafeClick(AutoButton)
+addSafeClick(CloseButton)
+addSafeClick(AntiIdleButton)
