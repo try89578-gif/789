@@ -1,0 +1,889 @@
+--[[
+    Title: 999ตัวตึง | ULTIMATE V4 (API + Database Hybrid + Anti-Duplicate + SettingsUI)
+    Author: 999ตัวตึง (Ultimate Edition)
+    Features:
+    - API Mode (3 คำจาก Datamuse API)
+    - Database Mode (ฐานข้อมูลเดิม)
+    - Auto Fallback (ลองคำจาก API 3 ครั้ง แล้วค่อยไป Database)
+    - Safe Config System
+    - Anti-Duplicate System (ไม่ดึงคำซ้ำจนกว่าจะรีเซ็ต)
+    - Pre-Turn Word Detection (ตรวจจับคำก่อนเปลี่ยนเทิร์น 0.4 วินาที)
+    - Advanced Settings Menu (พิมพ์/ลบ/ยาว สูงสุด/Anti-Idle)
+]]
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- โหลด Rayfield UI Library
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+--------------------------------------------------------------------
+-- ตัวแปรระบบ
+--------------------------------------------------------------------
+
+local WordDatabase = {}
+local isDBLoaded = false
+local isProcessing = false
+local lastTypedLength = 0
+local baseTypeSpeed = 0.08
+local deleteSpeed = 0.05
+local maxLength = 12
+
+-- ตัวแปร Search Mode
+local SearchMode = "database"  -- "api" หรือ "database"
+local apiAttemptCount = 0
+local maxAPIAttempts = 3
+local lastAPIWords = {}
+local usedAPIWords = {}
+
+-- ตัวแปร Auto Play Mode
+local isAutoPlayActive = false
+local autoPlayConnection = nil
+local lastDetectedPlayer = ""
+local isWaitingForOtherPlayer = false
+
+-- ตัวแปร Anti-Idle
+local isAntiIdleActive = false
+local antiIdleHeartbeat = nil
+
+-- ตัวแปร PC Emulator
+local isPCEmulatorActive = false
+local oldMetaIndex = nil
+
+-- ⭐ Anti-Duplicate System
+local usedWordsHistory = {}  -- เก็บคำที่เคยใช้ทั้งหมด
+local preDetectionConnection = nil  -- Connection สำหรับตรวจจับก่อนเปลี่ยนเทิร์น
+local lastPreDetectedWord = ""  -- คำที่ตรวจจับได้ก่อนเปลี่ยนเทิร์น
+
+--------------------------------------------------------------------
+-- ⭐ ANTI-DUPLICATE FUNCTIONS
+--------------------------------------------------------------------
+
+local function IsWordUsed(word)
+    return usedWordsHistory[word:lower()] == true
+end
+
+local function MarkWordAsUsed(word)
+    usedWordsHistory[word:lower()] = true
+end
+
+local function ResetUsedWords()
+    usedWordsHistory = {}
+    usedAPIWords = {}
+    lastPreDetectedWord = ""
+    Rayfield:Notify({
+        Title = "รีเซ็ตสำเร็จ! 🔄",
+        Content = "ล้างประวัติคำที่เคยใช้แล้ว",
+        Duration = 3,
+        Image = 4483362458,
+    })
+end
+
+local function GetUsedWordsCount()
+    local count = 0
+    for _ in pairs(usedWordsHistory) do
+        count = count + 1
+    end
+    return count
+end
+
+--------------------------------------------------------------------
+-- ⭐ PRE-TURN DETECTION SYSTEM (ตรวจจับคำก่อนเปลี่ยนเทิร์น 0.4 วินาที)
+--------------------------------------------------------------------
+
+local function StartPreTurnDetection()
+    if preDetectionConnection then return end
+
+    preDetectionConnection = RunService.Heartbeat:Connect(function()
+        if not isAutoPlayActive then return end
+
+        -- ตรวจสอบว่าใกล้จะถึงเทิร์นเราหรือไม่
+        local isMyTurn, turnText = checkIfMyTurn()
+
+        if not isMyTurn then
+            -- ไม่ใช่เทิร์นเรา ให้ตรวจจับคำล่วงหน้า
+            task.wait(0.4)  -- รอ 0.4 วินาที
+
+            local extracted = extractWordFromGame()
+            if extracted and #extracted > 0 and extracted ~= lastPreDetectedWord then
+                lastPreDetectedWord = extracted
+
+                -- บันทึกคำนี้เป็นคำที่เคยใช้
+                MarkWordAsUsed(extracted)
+
+                Rayfield:Notify({
+                    Title = "🔍 ตรวจจับคำล่วงหน้า",
+                    Content = "คำ: " .. extracted:upper() .. "\nบันทึกแล้ว จะไม่ใช้ซ้ำ",
+                    Duration = 2,
+                })
+            end
+        end
+    end)
+end
+
+local function StopPreTurnDetection()
+    if preDetectionConnection then
+        preDetectionConnection:Disconnect()
+        preDetectionConnection = nil
+    end
+end
+
+--------------------------------------------------------------------
+-- API SYSTEM (Datamuse API) - Enhanced with Anti-Duplicate
+--------------------------------------------------------------------
+
+local function FetchWordsFromAPI(prefix)
+    if not prefix or #prefix == 0 then return nil end
+
+    local url = "https://api.datamuse.com/words?sp=" .. prefix .. "*&max=20"  -- เพิ่มเป็น 20 คำเพื่อมีตัวเลือกมากขึ้น
+
+    local success, response = pcall(function()
+        return game:HttpGet(url)
+    end)
+
+    if success then
+        local data = HttpService:JSONDecode(response)
+        local words = {}
+
+        for _, wordData in ipairs(data) do
+            if wordData.word and #wordData.word <= maxLength then
+                local word = wordData.word:lower()
+                -- ⭐ กรองคำที่เคยใช้แล้วออก
+                if not IsWordUsed(word) then
+                    table.insert(words, word)
+                end
+            end
+        end
+
+        return words
+    else
+        return nil
+    end
+end
+
+local function GetUnusedAPIWord()
+    for _, word in ipairs(lastAPIWords) do
+        if not usedAPIWords[word] and not IsWordUsed(word) then  -- ⭐ เช็คทั้ง 2 ระบบ
+            usedAPIWords[word] = true
+            return word
+        end
+    end
+    return nil
+end
+
+--------------------------------------------------------------------
+-- DATABASE SYSTEM - Enhanced with Anti-Duplicate
+--------------------------------------------------------------------
+
+local function findWordFromDatabase(prefix)
+    local candidates = {}
+    for _, word in ipairs(WordDatabase) do
+        if #word >= 4 and #word <= maxLength and word:sub(1, #prefix) == prefix then
+            -- ⭐ กรองคำที่เคยใช้แล้วออก
+            if not IsWordUsed(word) then
+                table.insert(candidates, word)
+                if #candidates >= 50 then break end
+            end
+        end
+    end
+    return #candidates > 0 and candidates[math.random(1, #candidates)] or nil
+end
+
+--------------------------------------------------------------------
+-- GAME LOGIC FUNCTIONS
+--------------------------------------------------------------------
+
+local function extractWordFromGame()
+    local inGame = LocalPlayer.PlayerGui:FindFirstChild("InGame")
+    if not inGame then return nil end
+    local frame = inGame:FindFirstChild("Frame")
+    if not frame then return nil end
+    local currentWordFolder = frame:FindFirstChild("CurrentWord")
+    if not currentWordFolder then return nil end
+
+    local letters = {}
+    for _, child in pairs(currentWordFolder:GetChildren()) do
+        local num = tonumber(child.Name)
+        if num then
+            local letter = child:FindFirstChild("Letter")
+            if letter and letter:IsA("TextLabel") then
+                letters[num] = letter.Text
+            end
+        end
+    end
+
+    local sortedLetters = {}
+    for i = 1, 20 do
+        if letters[i] then table.insert(sortedLetters, letters[i]) end
+    end
+
+    return table.concat(sortedLetters, ""):lower()
+end
+
+function checkIfMyTurn()
+    local success, result = pcall(function()
+        local inGame = LocalPlayer.PlayerGui:FindFirstChild("InGame")
+        if inGame then
+            local frame = inGame:FindFirstChild("Frame")
+            if frame then
+                local typeObj = frame:FindFirstChild("Type")
+                if typeObj and (typeObj:IsA("TextLabel") or typeObj:IsA("TextBox") or typeObj:IsA("TextButton")) then
+                    local text = typeObj.Text
+                    if text:find(LocalPlayer.Name) then
+                        return true, text
+                    end
+                end
+            end
+        end
+        return false, ""
+    end)
+
+    if success then
+        return result
+    end
+    return false, ""
+end
+
+local function findWord(prefix)
+    if SearchMode == "api" then
+        -- ลองใช้คำจาก API ที่ยังไม่ได้ใช้
+        local unusedWord = GetUnusedAPIWord()
+        if unusedWord then
+            return unusedWord, "api"
+        end
+
+        -- ถ้าใช้ครบ 3 คำแล้ว ไปหาจาก Database
+        if apiAttemptCount >= maxAPIAttempts then
+            local dbWord = findWordFromDatabase(prefix)
+            if dbWord then
+                return dbWord, "database_fallback"
+            end
+        end
+
+        return nil, nil
+    else
+        -- Database Mode
+        local dbWord = findWordFromDatabase(prefix)
+        if dbWord then
+            return dbWord, "database"
+        end
+        return nil, nil
+    end
+end
+
+local function getRandomDelay(baseSpeed)
+    return math.max(0.008, baseSpeed * (0.5 + math.random() * 1))
+end
+
+local function deleteAllText()
+    local deleteCount = math.max(lastTypedLength, 5)
+
+    for i = 1, deleteCount do
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
+            task.wait(0.01)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
+        end)
+        task.wait(getRandomDelay(deleteSpeed))
+    end
+
+    lastTypedLength = 0
+end
+
+local function autoType(prefix, fullWord, isAutoMode, source)
+    local remaining = fullWord:sub(#prefix + 1)
+    lastTypedLength = #fullWord
+
+    -- ⭐ บันทึกคำที่กำลังจะพิมพ์
+    MarkWordAsUsed(fullWord)
+
+    task.spawn(function()
+        for i = 1, #remaining do
+            local char = remaining:sub(i,i):upper()
+            pcall(function()
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode[char], false, game)
+                task.wait(0.01)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode[char], false, game)
+            end)
+            task.wait(getRandomDelay(baseTypeSpeed))
+        end
+
+        task.wait(getRandomDelay(0.1))
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+        task.wait(0.03)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+
+        -- แสดง Notification ตามที่มา
+        local sourceEmoji = ""
+        local sourceName = ""
+
+        if source == "api" then
+            sourceEmoji = "🌐"
+            sourceName = "API (Datamuse)"
+        elseif source == "database_fallback" then
+            sourceEmoji = "💾"
+            sourceName = "Database (Fallback)"
+        else
+            sourceEmoji = "📚"
+            sourceName = "Database"
+        end
+
+        Rayfield:Notify({
+            Title = "พิมพ์สำเร็จ! ✅ " .. sourceEmoji,
+            Content = string.format("คำ: %s\nที่มา: %s\nความยาว: %d ตัวอักษร\n✨ ใช้ไปแล้ว: %d คำ", 
+                fullWord:upper(),
+                sourceName,
+                #fullWord,
+                GetUsedWordsCount()
+            ),
+            Duration = 3,
+            Image = 4483362458,
+        })
+
+        if isAutoMode then
+            task.wait(1)
+            local stillMyTurn, _ = checkIfMyTurn()
+            if stillMyTurn then
+                -- คำผิด! ลองคำอื่น
+                apiAttemptCount = apiAttemptCount + 1
+
+                if apiAttemptCount >= maxAPIAttempts then
+                    Rayfield:Notify({
+                        Title = "คำจาก API หมดแล้ว! 🔄",
+                        Content = "กำลังใช้ Database แทน...",
+                        Duration = 2,
+                        Image = 4483362458,
+                    })
+                else
+                    Rayfield:Notify({
+                        Title = "คำผิด! 🔄",
+                        Content = string.format("ลองคำอื่น (%d/%d)", apiAttemptCount, maxAPIAttempts),
+                        Duration = 2,
+                        Image = 4483362458,
+                    })
+                end
+
+                deleteAllText()
+                task.wait(0.2)
+
+                local extracted = extractWordFromGame()
+                if extracted and #extracted > 0 then
+                    local newWord, newSource = findWord(extracted)
+                    if newWord and newWord ~= fullWord then
+                        autoType(extracted, newWord, true, newSource)
+                    else
+                        isProcessing = false
+                        isWaitingForOtherPlayer = true
+                        apiAttemptCount = 0
+                        usedAPIWords = {}
+                    end
+                else
+                    isProcessing = false
+                    isWaitingForOtherPlayer = true
+                    apiAttemptCount = 0
+                    usedAPIWords = {}
+                end
+            else
+                isProcessing = false
+                isWaitingForOtherPlayer = true
+                apiAttemptCount = 0
+                usedAPIWords = {}
+            end
+        else
+            isProcessing = false
+        end
+    end)
+end
+
+local function RunAutoLogic()
+    if isProcessing then return end
+    if not isDBLoaded and SearchMode == "database" then 
+        Rayfield:Notify({Title = "ใจเย็น!", Content = "กำลังโหลดฐานข้อมูล...", Duration = 2})
+        return 
+    end
+
+    isProcessing = true
+    apiAttemptCount = 0
+    usedAPIWords = {}
+
+    local extracted = extractWordFromGame()
+    if extracted and #extracted > 0 then
+        -- ถ้าเป็น API Mode ให้ดึงข้อมูลก่อน
+        if SearchMode == "api" then
+            Rayfield:Notify({
+                Title = "กำลังค้นหา... 🌐",
+                Content = "ดึงข้อมูลจาก API",
+                Duration = 2
+            })
+
+            lastAPIWords = FetchWordsFromAPI(extracted)
+
+            if not lastAPIWords or #lastAPIWords == 0 then
+                Rayfield:Notify({
+                    Title = "API ไม่พบคำ ⚠️",
+                    Content = "กำลังใช้ Database แทน...",
+                    Duration = 2
+                })
+                SearchMode = "database"
+            end
+        end
+
+        local foundWord, source = findWord(extracted)
+        if foundWord then
+            Rayfield:Notify({
+                Title = "เจอคำแล้ว! 🎯",
+                Content = extracted:upper() .. " -> " .. foundWord:upper(),
+                Duration = 2,
+                Image = 4483362458,
+            })
+            autoType(extracted, foundWord, false, source)
+        else
+            Rayfield:Notify({
+                Title = "ไม่พบคำ ❌", 
+                Content = string.format("ไม่มีคำที่ขึ้นต้นด้วย %s (ที่ยังไม่เคยใช้)", extracted:upper()),
+                Duration = 3
+            })
+            isProcessing = false
+        end
+    else
+        Rayfield:Notify({Title = "ผิดพลาด ⚠️", Content = "ไม่พบตัวอักษรบนหน้าจอ", Duration = 2})
+        isProcessing = false
+    end
+end
+
+--------------------------------------------------------------------
+-- AUTO PLAY MODE
+--------------------------------------------------------------------
+
+local function StartAutoPlay()
+    if autoPlayConnection then return end
+
+    -- ⭐ เริ่ม Pre-Turn Detection
+    StartPreTurnDetection()
+
+    Rayfield:Notify({
+        Title = "Auto Play เริ่มทำงาน! 🤖",
+        Content = "กำลังตรวจจับรอบของคุณ...\n🔍 ระบบตรวจจับคำล่วงหน้าทำงาน",
+        Duration = 4,
+        Image = 4483362458,
+    })
+
+    autoPlayConnection = RunService.Heartbeat:Connect(function()
+        if not isAutoPlayActive or isProcessing then return end
+        if not isDBLoaded and SearchMode == "database" then return end
+
+        local isMyTurn, _ = checkIfMyTurn()
+
+        if isMyTurn then
+            if isWaitingForOtherPlayer and lastDetectedPlayer == LocalPlayer.Name then
+                return
+            elseif isWaitingForOtherPlayer then
+                isWaitingForOtherPlayer = false
+            end
+
+            lastDetectedPlayer = LocalPlayer.Name
+            isProcessing = true
+            apiAttemptCount = 0
+            usedAPIWords = {}
+
+            task.wait(0.5)
+
+            local extracted = extractWordFromGame()
+            if extracted and #extracted > 0 then
+                -- ดึงข้อมูลจาก API ถ้าเป็น API Mode
+                if SearchMode == "api" then
+                    lastAPIWords = FetchWordsFromAPI(extracted)
+
+                    if not lastAPIWords or #lastAPIWords == 0 then
+                        SearchMode = "database"
+                    end
+                end
+
+                local foundWord, source = findWord(extracted)
+                if foundWord then
+                    autoType(extracted, foundWord, true, source)
+                else
+                    isProcessing = false
+                    isWaitingForOtherPlayer = true
+                end
+            else
+                isProcessing = false
+                isWaitingForOtherPlayer = true
+            end
+        else
+            if isWaitingForOtherPlayer then
+                isWaitingForOtherPlayer = false
+            end
+        end
+    end)
+end
+
+local function StopAutoPlay()
+    if autoPlayConnection then
+        autoPlayConnection:Disconnect()
+        autoPlayConnection = nil
+    end
+
+    -- ⭐ หยุด Pre-Turn Detection
+    StopPreTurnDetection()
+
+    isWaitingForOtherPlayer = false
+    lastDetectedPlayer = ""
+
+    Rayfield:Notify({
+        Title = "Auto Play หยุดแล้ว 🛑",
+        Content = "กลับสู่โหมดปกติ",
+        Duration = 2,
+        Image = 4483362458,
+    })
+end
+
+--------------------------------------------------------------------
+-- PC EMULATOR
+--------------------------------------------------------------------
+
+local function EnablePCEmulator()
+    if isPCEmulatorActive then return end
+    if not hookmetamethod then
+        Rayfield:Notify({
+            Title = "ผิดพลาด ⚠️",
+            Content = "Executor ไม่รองรับ hookmetamethod",
+            Duration = 4,
+        })
+        return
+    end
+
+    pcall(function()
+        oldMetaIndex = hookmetamethod(UserInputService, "__index", function(self, property)
+            if self == UserInputService then
+                if property == "KeyboardEnabled" or property == "MouseEnabled" then
+                    return true
+                elseif property == "TouchEnabled" then
+                    return false
+                end
+            end
+            return oldMetaIndex(self, property)
+        end)
+
+        isPCEmulatorActive = true
+        Rayfield:Notify({
+            Title = "PC Emulator เปิดแล้ว 💻",
+            Content = "กดคีย์บนมือถือทำงานปกติแล้ว",
+            Duration = 4,
+            Image = 4483362458,
+        })
+    end)
+end
+
+--------------------------------------------------------------------
+-- MOBILE LIQUID BUTTON
+--------------------------------------------------------------------
+
+local MobileButtonFrame = Instance.new("TextButton")
+local ButtonStroke = Instance.new("UIStroke")
+local ButtonCorner = Instance.new("UICorner")
+local ButtonGradient = Instance.new("UIGradient")
+
+MobileButtonFrame.Name = "LiquidButton"
+MobileButtonFrame.Size = UDim2.fromOffset(60, 60)
+MobileButtonFrame.Position = UDim2.fromScale(0.8, 0.6)
+MobileButtonFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MobileButtonFrame.BackgroundTransparency = 0.2
+MobileButtonFrame.Text = "🚀"
+MobileButtonFrame.TextSize = 30
+MobileButtonFrame.AutoButtonColor = false
+MobileButtonFrame.Visible = false
+MobileButtonFrame.Parent = MobileGui
+
+ButtonCorner.CornerRadius = UDim.new(1, 0)
+ButtonCorner.Parent = MobileButtonFrame
+
+ButtonStroke.Thickness = 3
+ButtonStroke.Transparency = 0
+ButtonStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+ButtonStroke.Parent = MobileButtonFrame
+
+ButtonGradient.Rotation = 45
+ButtonGradient.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Color3.fromRGB(255,255,255)), ColorSequenceKeypoint.new(1, Color3.fromRGB(150,150,150))}
+ButtonGradient.Transparency = NumberSequence.new{NumberSequenceKeypoint.new(0,0.5), NumberSequenceKeypoint.new(0.5,0.8), NumberSequenceKeypoint.new(1,0.5)}
+ButtonGradient.Parent = MobileButtonFrame
+
+-- RGB Animation
+task.spawn(function()
+    local hue = 0
+    while MobileButtonFrame.Parent do
+        hue = (hue + 0.01) % 1
+        local color = Color3.fromHSV(hue, 1, 1)
+        ButtonStroke.Color = color
+        MobileButtonFrame.TextColor3 = color
+        task.wait(0.03)
+    end
+end)
+
+-- Draggable
+local dragging, dragInput, dragStart, startPos
+local function update(input)
+    local delta = input.Position - dragStart
+    MobileButtonFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+MobileButtonFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MobileButtonFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+
+MobileButtonFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then update(input) end
+end)
+
+MobileButtonFrame.MouseButton1Click:Connect(function()
+    TweenService:Create(MobileButtonFrame, TweenInfo.new(0.1), {Size = UDim2.fromOffset(50,50)}):Play()
+    task.wait(0.1)
+    TweenService:Create(MobileButtonFrame, TweenInfo.new(0.1), {Size = UDim2.fromOffset(60,60)}):Play()
+    RunAutoLogic()
+end)
+
+--------------------------------------------------------------------
+-- สร้าง ScreenGui (ทำหลัง MobileButton เพื่อไม่ error)
+--------------------------------------------------------------------
+local MobileGui = MobileButtonFrame.Parent
+
+--------------------------------------------------------------------
+-- RAYFIELD UI
+--------------------------------------------------------------------
+
+local Window = Rayfield:CreateWindow({
+   Name = "999ตัวตึง | Ultimate Word Solver V4 Enhanced",
+   LoadingTitle = "กำลังโหลดความตึง...",
+   LoadingSubtitle = "by 999ตัวตึง (Anti-Duplicate + Settings Edition)",
+   ConfigurationSaving = {Enabled = true, FolderName = "999SolverConfig", FileName = "Manager"},
+   Discord = {Enabled = false},
+   KeySystem = false,
+})
+
+local MainTab = Window:CreateTab("หน้าหลัก", 4483362458)
+local SettingsTab = Window:CreateTab("ตั้งค่า", 4483362458)
+
+--------------------------------------------------------------------
+-- MAIN TAB
+--------------------------------------------------------------------
+
+MainTab:CreateSection("เลือกโหมดค้นหา")
+
+MainTab:CreateDropdown({
+   Name = "🔍 วิธีหาคำศัพท์",
+   Options = {"API Mode (Datamuse - 3 คำ)", "Database Mode (ฐานข้อมูล)"},
+   CurrentOption = {"Database Mode (ฐานข้อมูล)"},
+   MultipleOptions = false,
+   Flag = "SearchModeDropdown",
+   Callback = function(Option)
+        if Option[1] == "API Mode (Datamuse - 3 คำ)" then
+            SearchMode = "api"
+            Rayfield:Notify({
+                Title = "เปลี่ยนเป็น API Mode 🌐",
+                Content = "จะดึงคำจาก Datamuse API (3 คำ ลองหมดไป Database)",
+                Duration = 3
+            })
+        else
+            SearchMode = "database"
+            Rayfield:Notify({
+                Title = "เปลี่ยนเป็น Database Mode 📚",
+                Content = "จะใช้ฐานข้อมูลท้องถิ่น",
+                Duration = 3
+            })
+        end
+   end,
+})
+
+MainTab:CreateParagraph({
+    Title = "💡 คำอธิบายโหมด",
+    Content = "API Mode: ดึง 3 คำจาก Server, ลองทีละคำ, หมดไป Database\nDatabase Mode: ใช้ฐานข้อมูลท้องถิ่น (รวดเร็ว)\n⭐ ระบบป้องกันคำซ้ำ: จะไม่ใช้คำเดิมซ้ำจนกว่าจะกดรีเซ็ต"
+})
+
+MainTab:CreateSection("ระบบออโต้")
+
+MainTab:CreateButton({
+   Name = "🚀 กดเพื่อหาคำ (Run Once)",
+   Callback = RunAutoLogic
+})
+
+MainTab:CreateToggle({
+   Name = "🤖 Auto Play Mode (เล่นอัตโนมัติทั้งเกม)",
+   CurrentValue = false,
+   Flag = "AutoPlayToggle",
+   Callback = function(v)
+        isAutoPlayActive = v
+        if v then StartAutoPlay() else StopAutoPlay() end
+   end,
+})
+
+MainTab:CreateToggle({
+   Name = "📱 ปุ่มมือถือ (Liquid RGB Button)",
+   CurrentValue = false,
+   Flag = "MobileBtnToggle",
+   Callback = function(v) MobileButtonFrame.Visible = v end,
+})
+
+MainTab:CreateToggle({
+   Name = "💻 PC Emulator (จำเป็นสำหรับมือถือ)",
+   CurrentValue = false,
+   Flag = "PCEmulatorToggle",
+   Callback = function(v)
+        if v then EnablePCEmulator() end
+   end,
+})
+
+-- ⭐ เพิ่มส่วน Anti-Duplicate
+MainTab:CreateSection("🔄 ระบบป้องกันคำซ้ำ")
+
+MainTab:CreateButton({
+   Name = "🔄 รีเซ็ตประวัติคำที่ใช้",
+   Callback = function()
+        ResetUsedWords()
+   end,
+})
+
+MainTab:CreateButton({
+   Name = "📊 ดูจำนวนคำที่ใช้แล้ว",
+   Callback = function()
+        Rayfield:Notify({
+            Title = "📊 สถิติการใช้คำ",
+            Content = string.format("ใช้ไปแล้ว: %d คำ\n✨ ระบบป้องกันคำซ้ำทำงาน\n🔍 ตรวจจับคำล่วงหน้า 0.4 วินาที", GetUsedWordsCount()),
+            Duration = 4,
+            Image = 4483362458,
+        })
+   end,
+})
+
+MainTab:CreateParagraph({
+    Title = "ℹ️ ระบบป้องกันคำซ้ำ",
+    Content = "• ระบบจะจดจำคำทุกคำที่เคยใช้\n• ไม่ดึงคำซ้ำจาก API และ Database\n• ตรวจจับคำก่อนเปลี่ยนเทิร์น 0.4 วินาที\n• กดรีเซ็ตเพื่อล้างประวัติ"
+})
+
+--------------------------------------------------------------------
+-- SETTINGS TAB (นำเข้าและรวมของ hmmmm.txt)
+--------------------------------------------------------------------
+
+SettingsTab:CreateSection("ตั้งค่าการพิมพ์")
+
+SettingsTab:CreateSlider({
+   Name = "ความเร็วในการพิมพ์ (วินาที)",
+   Range = {0.01, 0.5}, Increment = 0.01, Suffix = "s",
+   CurrentValue = baseTypeSpeed, Flag = "SpeedSlider",
+   Callback = function(v) baseTypeSpeed = v end,
+})
+
+SettingsTab:CreateSlider({
+   Name = "ความเร็วในการลบคำ (วินาที)",
+   Range = {0.01, 0.2}, Increment = 0.01, Suffix = "s",
+   CurrentValue = deleteSpeed, Flag = "DeleteSpeedSlider",
+   Callback = function(v) deleteSpeed = v end,
+})
+
+SettingsTab:CreateInput({
+   Name = "ความยาวคำสูงสุด",
+   PlaceholderText = tostring(maxLength),
+   Callback = function(t) maxLength = tonumber(t) or 12 end,
+})
+
+SettingsTab:CreateSection("ระบบเสริม")
+
+SettingsTab:CreateToggle({
+    Name = "🛡️ Anti-Idle (กันหลุด - เวอร์ชันเสถียร)",
+    CurrentValue = false,
+    Flag = "AntiIdle",
+    Callback = function(Value)
+        isAntiIdleActive = Value
+
+        if Value then
+            Rayfield:Notify({Title = "Anti-Idle", Content = "เปิดใช้งานแล้ว (เสถียร 100%)", Duration = 3})
+
+            antiIdleHeartbeat = RunService.Heartbeat:Connect(function()
+                if not isAntiIdleActive then return end
+
+                if math.random() < 0.005 then
+                    pcall(function()
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightControl, false, game)
+                        task.wait(0.05)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightControl, false, game)
+                    end)
+                end
+            end)
+
+        else
+            Rayfield:Notify({Title = "Anti-Idle", Content = "ปิดใช้งานแล้ว", Duration = 2})
+            if antiIdleHeartbeat then
+                antiIdleHeartbeat:Disconnect()
+                antiIdleHeartbeat = nil
+            end
+        end
+    end,
+})
+
+SettingsTab:CreateButton({
+    Name = "❌ ปิดสคริปต์ (Unload)",
+    Callback = function()
+        if autoPlayConnection then autoPlayConnection:Disconnect() end
+        if antiIdleHeartbeat then antiIdleHeartbeat:Disconnect() end
+        if preDetectionConnection then preDetectionConnection:Disconnect() end
+        MobileGui:Destroy()
+        Rayfield:Destroy()
+    end,
+})
+
+--------------------------------------------------------------------
+-- โหลด Database
+--------------------------------------------------------------------
+
+task.spawn(function()
+    Rayfield:Notify({Title = "Database", Content = "กำลังดาวน์โหลดคำศัพท์...", Duration = 3})
+
+    local success, result = pcall(game.HttpGet, game, "https://raw.githubusercontent.com/try89578-gif/789/refs/heads/main/500k.txt")
+
+    if success then
+        for word in result:gmatch("[a-zA-Z]+") do
+            if #word >= 3 and #word <= 20 then
+                table.insert(WordDatabase, word:lower())
+            end
+        end
+        isDBLoaded = true
+        Rayfield:Notify({Title = "พร้อมใช้งาน! ✅", Content = "โหลดคำศัพท์ " .. #WordDatabase .. " คำ", Duration = 4})
+    else
+        local backup = {"apple","banana","cat","dog","umbrella","house","water","table","chair","book"}
+        for _, w in ipairs(backup) do table.insert(WordDatabase, w) end
+        isDBLoaded = true
+        Rayfield:Notify({Title = "แจ้งเตือน ⚠️", Content = "ใช้ Database สำรอง (ไม่มีเน็ต)", Duration = 4})
+    end
+end)
+
+-- แจ้งเตือนสำหรับผู้ใช้มือถือ
+task.spawn(function()
+    task.wait(3)
+    if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+        Rayfield:Notify({
+            Title = "ตรวจพบมือถือ 📱",
+            Content = "แนะนำเปิด 'PC Emulator' เพื่อให้สคริปต์กดคีย์ได้ปกติ",
+            Duration = 6,
+            Image = 4483362458,
+        })
+    end
+end)
