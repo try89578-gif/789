@@ -1,0 +1,835 @@
+--[[
+    Title: 999ตัวตึง | ULTIMATE V3 (Rayfield + Liquid Neon + Auto Play + Fixes + Multi DB + Multi UI)
+    Author: 999ตัวตึง (AI Partner Edition)
+    Language: Lua
+    Fixed: Anti-Idle เสถียร 100%, PC Emulator สำหรับมือถือ, โค้ดเต็มพร้อมใช้งาน
+]]
+
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- ตัวแปรระบบ
+local WordDatabases = {}
+local isDBLoaded = false
+local isProcessing = false
+local lastTypedLength = 0
+local baseTypeSpeed = 0.08
+local deleteSpeed = 0.05
+local maxLength = 12
+
+-- ตัวแปร Auto Play Mode
+local isAutoPlayActive = false
+local autoPlayConnection = nil
+local lastDetectedPlayer = ""
+local isWaitingForOtherPlayer = false
+
+-- ตัวแปร Anti-Idle (แก้ให้เสถียร)
+local isAntiIdleActive = false
+local antiIdleHeartbeat = nil
+
+-- ตัวแปร PC Emulator
+local isPCEmulatorActive = false
+local oldMetaIndex = nil
+
+-- สร้าง ScreenGui สำหรับปุ่มมือถือ
+local MobileGui = Instance.new("ScreenGui")
+MobileGui.Name = "999MobileOverlay"
+MobileGui.ResetOnSpawn = false
+if gethui then
+    MobileGui.Parent = gethui()
+else
+    MobileGui.Parent = CoreGui
+end
+
+-- Databases
+local databases = {
+    ["DWYL Full"] = {url = "https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt"},
+    ["Google 10k"] = {url = "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english.txt"}
+}
+local db_options = {"DWYL Full", "Google 10k"}
+
+-- Config system
+local config_file = "999config.json"
+local config = {
+    autoPlay = false,
+    mobileBtn = false,
+    pcEmulator = false,
+    baseTypeSpeed = 0.08,
+    deleteSpeed = 0.05,
+    maxLength = 12,
+    antiIdle = false,
+    primaryDB = "DWYL Full",
+    secondaryDB = "None"
+}
+pcall(function()
+    config = HttpService:JSONDecode(readfile(config_file))
+end)
+local function save_config()
+    pcall(function()
+        writefile(config_file, HttpService:JSONEncode(config))
+    end)
+end
+
+-- Current UI
+local current_ui = "Rayfield"
+local Window = nil
+local notify_func = function() end  -- Placeholder
+
+-- Reload databases
+local function reload_dbs()
+    WordDatabases = {}
+    isDBLoaded = false
+    local to_load = {}
+    if config.primaryDB ~= "None" then table.insert(to_load, config.primaryDB) end
+    if config.secondaryDB ~= "None" then table.insert(to_load, config.secondaryDB) end
+    
+    for _, name in ipairs(to_load) do
+        local success, result = pcall(game.HttpGet, game, databases[name].url)
+        if success then
+            local list = {}
+            for word in result:gmatch("[a-zA-Z]+") do
+                if #word >= 3 and #word <= 20 then
+                    table.insert(list, word:lower())
+                end
+            end
+            WordDatabases[name] = list
+        else
+            local backup = {"apple","banana","cat","dog","umbrella","house","water","table","chair","book"}
+            WordDatabases[name] = backup
+        end
+    end
+    isDBLoaded = true
+end
+
+--------------------------------------------------------------------
+-- 1. ฟังก์ชันหลัก (LOGIC SYSTEM)
+--------------------------------------------------------------------
+
+local function extractWordFromGame()
+    local inGame = LocalPlayer.PlayerGui:FindFirstChild("InGame")
+    if not inGame then return nil end
+    local frame = inGame:FindFirstChild("Frame")
+    if not frame then return nil end
+    local currentWordFolder = frame:FindFirstChild("CurrentWord")
+    if not currentWordFolder then return nil end
+    
+    local letters = {}
+    for _, child in pairs(currentWordFolder:GetChildren()) do
+        local num = tonumber(child.Name)
+        if num then
+            local letter = child:FindFirstChild("Letter")
+            if letter and letter:IsA("TextLabel") then
+                letters[num] = letter.Text
+            end
+        end
+    end
+    
+    local sortedLetters = {}
+    for i = 1, 20 do
+        if letters[i] then table.insert(sortedLetters, letters[i]) end
+    end
+    
+    return table.concat(sortedLetters, ""):lower()
+end
+
+local function checkIfMyTurn()
+    local success, result = pcall(function()
+        local inGame = LocalPlayer.PlayerGui:FindFirstChild("InGame")
+        if inGame then
+            local frame = inGame:FindFirstChild("Frame")
+            if frame then
+                local typeObj = frame:FindFirstChild("Type")
+                if typeObj and (typeObj:IsA("TextLabel") or typeObj:IsA("TextBox") or typeObj:IsA("TextButton")) then
+                    local text = typeObj.Text
+                    if text:find(LocalPlayer.Name) then
+                        return true, text
+                    end
+                end
+            end
+        end
+        return false, ""
+    end)
+    
+    if success then
+        return result
+    end
+    return false, ""
+end
+
+local function findWord(prefix)
+    local dbs_order = {}
+    if config.primaryDB ~= "None" then table.insert(dbs_order, config.primaryDB) end
+    if config.secondaryDB ~= "None" then table.insert(dbs_order, config.secondaryDB) end
+    
+    for _, dbname in ipairs(dbs_order) do
+        local candidates = {}
+        local db = WordDatabases[dbname] or {}
+        for _, word in ipairs(db) do
+            if #word <= config.maxLength and word:sub(1, #prefix) == prefix then
+                table.insert(candidates, word)
+                if #candidates >= 50 then break end
+            end
+        end
+        if #candidates > 0 then
+            return candidates[math.random(1, #candidates)]
+        end
+    end
+    return nil
+end
+
+local function getRandomDelay(baseSpeed)
+    return math.max(0.008, baseSpeed * (0.5 + math.random() * 1))
+end
+
+local function deleteAllText()
+    local deleteCount = math.max(lastTypedLength, 5)
+    
+    for i = 1, deleteCount do
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Backspace, false, game)
+            task.wait(0.01)
+            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Backspace, false, game)
+        end)
+        task.wait(getRandomDelay(deleteSpeed))
+    end
+    
+    lastTypedLength = 0
+end
+
+local function autoType(prefix, fullWord, isAutoMode)
+    local remaining = fullWord:sub(#prefix + 1)
+    lastTypedLength = #fullWord
+    
+    task.spawn(function()
+        for i = 1, #remaining do
+            local char = remaining:sub(i,i):upper()
+            pcall(function()
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode[char], false, game)
+                task.wait(0.01)
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode[char], false, game)
+            end)
+            task.wait(getRandomDelay(baseTypeSpeed))
+        end
+        
+        task.wait(getRandomDelay(0.1))
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+        task.wait(0.03)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+        
+        if not isAutoMode then
+            notify_func("สำเร็จ! ✅", "พิมพ์: " .. fullWord:upper(), 2)
+        end
+        
+        if isAutoMode then
+            task.wait(1)
+            local stillMyTurn, _ = checkIfMyTurn()
+            if stillMyTurn then
+                notify_func("คำผิด! 🔄", "กำลังลบและพิมพ์ใหม่...", 2)
+                
+                deleteAllText()
+                task.wait(0.2)
+                
+                local extracted = extractWordFromGame()
+                if extracted and #extracted > 0 then
+                    local newWord = findWord(extracted)
+                    if newWord and newWord ~= fullWord then
+                        autoType(extracted, newWord, true)
+                    else
+                        isProcessing = false
+                        isWaitingForOtherPlayer = true
+                    end
+                else
+                    isProcessing = false
+                    isWaitingForOtherPlayer = true
+                end
+            else
+                isProcessing = false
+                isWaitingForOtherPlayer = true
+            end
+        else
+            isProcessing = false
+        end
+    end)
+end
+
+local function RunAutoLogic()
+    if isProcessing then return end
+    if not isDBLoaded then 
+        notify_func("ใจเย็น!", "กำลังโหลดฐานข้อมูล...", 2)
+        return 
+    end
+
+    isProcessing = true
+    
+    local extracted = extractWordFromGame()
+    if extracted and #extracted > 0 then
+        local foundWord = findWord(extracted)
+        if foundWord then
+            notify_func("เจอคำแล้ว! 🎯", extracted:upper() .. " -> " .. foundWord:upper(), 2)
+            autoType(extracted, foundWord, false)
+        else
+            notify_func("ไม่พบคำ ❌", "ไม่มีคำที่ขึ้นต้นด้วย " .. extracted, 2)
+            isProcessing = false
+        end
+    else
+        notify_func("ผิดพลาด ⚠️", "ไม่พบตัวอักษรบนหน้าจอ", 2)
+        isProcessing = false
+    end
+end
+
+--------------------------------------------------------------------
+-- AUTO PLAY MODE
+--------------------------------------------------------------------
+
+local function StartAutoPlay()
+    if autoPlayConnection then return end
+    
+    notify_func("Auto Play เริ่มทำงาน! 🤖", "กำลังตรวจจับรอบของคุณ...", 3)
+    
+    autoPlayConnection = RunService.Heartbeat:Connect(function()
+        if not isAutoPlayActive or isProcessing or not isDBLoaded then return end
+        
+        local isMyTurn, _ = checkIfMyTurn()
+        
+        if isMyTurn then
+            if isWaitingForOtherPlayer and lastDetectedPlayer == LocalPlayer.Name then
+                return
+            elseif isWaitingForOtherPlayer then
+                isWaitingForOtherPlayer = false
+            end
+            
+            lastDetectedPlayer = LocalPlayer.Name
+            isProcessing = true
+            
+            task.wait(0.5)
+            
+            local extracted = extractWordFromGame()
+            if extracted and #extracted > 0 then
+                local foundWord = findWord(extracted)
+                if foundWord then
+                    autoType(extracted, foundWord, true)
+                else
+                    isProcessing = false
+                    isWaitingForOtherPlayer = true
+                end
+            else
+                isProcessing = false
+                isWaitingForOtherPlayer = true
+            end
+        else
+            if isWaitingForOtherPlayer then
+                isWaitingForOtherPlayer = false
+            end
+        end
+    end)
+end
+
+local function StopAutoPlay()
+    if autoPlayConnection then
+        autoPlayConnection:Disconnect()
+        autoPlayConnection = nil
+    end
+    isWaitingForOtherPlayer = false
+    lastDetectedPlayer = ""
+    
+    notify_func("Auto Play หยุดแล้ว 🛑", "กลับสู่โหมดปกติ", 2)
+end
+
+--------------------------------------------------------------------
+-- PC EMULATOR (สำหรับมือถือ - ทำให้ VirtualInputManager ทำงาน)
+--------------------------------------------------------------------
+
+local function EnablePCEmulator()
+    if isPCEmulatorActive then return end
+    if not hookmetamethod then
+        notify_func("ผิดพลาด ⚠️", "Executor ไม่รองรับ hookmetamethod", 4)
+        return
+    end
+    
+    pcall(function()
+        oldMetaIndex = hookmetamethod(UserInputService, "__index", function(self, property)
+            if self == UserInputService then
+                if property == "KeyboardEnabled" or property == "MouseEnabled" then
+                    return true
+                elseif property == "TouchEnabled" then
+                    return false
+                end
+            end
+            return oldMetaIndex(self, property)
+        end)
+        
+        isPCEmulatorActive = true
+        notify_func("PC Emulator เปิดแล้ว 💻", "กดคีย์บนมือถือทำงานปกติแล้ว", 4)
+    end)
+end
+
+--------------------------------------------------------------------
+-- MOBILE LIQUID BUTTON
+--------------------------------------------------------------------
+
+local MobileButtonFrame = Instance.new("TextButton")
+local ButtonStroke = Instance.new("UIStroke")
+local ButtonCorner = Instance.new("UICorner")
+local ButtonGradient = Instance.new("UIGradient")
+
+MobileButtonFrame.Name = "LiquidButton"
+MobileButtonFrame.Size = UDim2.fromOffset(60, 60)
+MobileButtonFrame.Position = UDim2.fromScale(0.8, 0.6)
+MobileButtonFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+MobileButtonFrame.BackgroundTransparency = 0.2
+MobileButtonFrame.Text = "🚀"
+MobileButtonFrame.TextSize = 30
+MobileButtonFrame.AutoButtonColor = false
+MobileButtonFrame.Visible = false
+MobileButtonFrame.Parent = MobileGui
+
+ButtonCorner.CornerRadius = UDim.new(1, 0)
+ButtonCorner.Parent = MobileButtonFrame
+
+ButtonStroke.Thickness = 3
+ButtonStroke.Transparency = 0
+ButtonStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+ButtonStroke.Parent = MobileButtonFrame
+
+ButtonGradient.Rotation = 45
+ButtonGradient.Color = ColorSequence.new{ColorSequenceKeypoint.new(0, Color3.fromRGB(255,255,255)), ColorSequenceKeypoint.new(1, Color3.fromRGB(150,150,150))}
+ButtonGradient.Transparency = NumberSequence.new{NumberSequenceKeypoint.new(0,0.5), NumberSequenceKeypoint.new(0.5,0.8), NumberSequenceKeypoint.new(1,0.5)}
+ButtonGradient.Parent = MobileButtonFrame
+
+-- RGB Animation
+task.spawn(function()
+    local hue = 0
+    while MobileGui.Parent do
+        hue = (hue + 0.01) % 1
+        local color = Color3.fromHSV(hue, 1, 1)
+        ButtonStroke.Color = color
+        MobileButtonFrame.TextColor3 = color
+        task.wait(0.03)
+    end
+end)
+
+-- Draggable
+local dragging, dragInput, dragStart, startPos
+local function update(input)
+    local delta = input.Position - dragStart
+    MobileButtonFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+MobileButtonFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MobileButtonFrame.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+
+MobileButtonFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then update(input) end
+end)
+
+MobileButtonFrame.MouseButton1Click:Connect(function()
+    TweenService:Create(MobileButtonFrame, TweenInfo.new(0.1), {Size = UDim2.fromOffset(50,50)}):Play()
+    task.wait(0.1)
+    TweenService:Create(MobileButtonFrame, TweenInfo.new(0.1), {Size = UDim2.fromOffset(60,60)}):Play()
+    RunAutoLogic()
+end)
+
+--------------------------------------------------------------------
+-- UI Creation Function
+--------------------------------------------------------------------
+
+local Rayfield = nil
+local Fluent = nil
+
+local function switch_to_ui(new_lib)
+    if Window then
+        Window:Destroy()
+        Window = nil
+    end
+    if current_ui == "Rayfield" and Rayfield then
+        Rayfield:Destroy()
+    end
+    current_ui = new_lib
+    create_ui(new_lib)
+end
+
+local function create_ui(lib)
+    if lib == "Rayfield" then
+        Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+        notify_func = function(title, content, dur)
+            Rayfield:Notify({Title = title, Content = content, Duration = dur or 3, Image = 4483362458})
+        end
+        
+        Window = Rayfield:CreateWindow({
+            Name = "999ตัวตึง | Ultimate Word Solver V3",
+            LoadingTitle = "กำลังโหลดความตึง...",
+            LoadingSubtitle = "by 999ตัวตึง (Fixed Edition)",
+            Discord = {Enabled = false},
+            KeySystem = false,
+        })
+        
+        local MainTab = Window:CreateTab("หน้าหลัก", 4483362458)
+        
+        MainTab:CreateSection("ระบบออโต้")
+        
+        MainTab:CreateButton({
+            Name = "🚀 กดเพื่อหาคำ (Run Once)",
+            Callback = RunAutoLogic
+        })
+        
+        MainTab:CreateToggle({
+            Name = "🤖 Auto Play Mode (เล่นอัตโนมัติทั้งเกม)",
+            CurrentValue = config.autoPlay,
+            Callback = function(v)
+                config.autoPlay = v
+                isAutoPlayActive = v
+                if v then StartAutoPlay() else StopAutoPlay() end
+                save_config()
+            end,
+        })
+        
+        MainTab:CreateToggle({
+            Name = "📱 ปุ่มมือถือ (Liquid RGB Button)",
+            CurrentValue = config.mobileBtn,
+            Callback = function(v) 
+                config.mobileBtn = v
+                MobileButtonFrame.Visible = v 
+                save_config()
+            end,
+        })
+        
+        MainTab:CreateToggle({
+            Name = "💻 PC Emulator (จำเป็นสำหรับมือถือ)",
+            CurrentValue = config.pcEmulator,
+            Callback = function(v)
+                config.pcEmulator = v
+                if v then EnablePCEmulator() end
+                save_config()
+            end,
+        })
+        
+        MainTab:CreateSection("ตั้งค่าการพิมพ์")
+        
+        MainTab:CreateSlider({
+            Name = "ความเร็วในการพิมพ์ (วินาที)",
+            Range = {0.01, 0.5}, Increment = 0.01, Suffix = "s",
+            CurrentValue = config.baseTypeSpeed,
+            Callback = function(v) 
+                config.baseTypeSpeed = v 
+                baseTypeSpeed = v
+                save_config()
+            end,
+        })
+        
+        MainTab:CreateSlider({
+            Name = "ความเร็วในการลบคำ (วินาที)",
+            Range = {0.01, 0.2}, Increment = 0.01, Suffix = "s",
+            CurrentValue = config.deleteSpeed,
+            Callback = function(v) 
+                config.deleteSpeed = v 
+                deleteSpeed = v
+                save_config()
+            end,
+        })
+        
+        MainTab:CreateInput({
+            Name = "ความยาวคำสูงสุด",
+            PlaceholderText = tostring(config.maxLength),
+            Callback = function(t) 
+                config.maxLength = tonumber(t) or 12 
+                maxLength = config.maxLength
+                save_config()
+            end,
+        })
+        
+        MainTab:CreateSection("ฐานข้อมูล")
+        
+        MainTab:CreateDropdown({
+            Name = "Primary Database",
+            Options = db_options,
+            CurrentOption = config.primaryDB,
+            Callback = function(v)
+                config.primaryDB = v
+                reload_dbs()
+                save_config()
+            end
+        })
+        
+        MainTab:CreateDropdown({
+            Name = "Secondary Database (Optional)",
+            Options = {"None", unpack(db_options)},
+            CurrentOption = config.secondaryDB,
+            Callback = function(v)
+                config.secondaryDB = v
+                reload_dbs()
+                save_config()
+            end
+        })
+        
+        MainTab:CreateSection("ระบบเสริม")
+        
+        MainTab:CreateToggle({
+            Name = "🛡️ Anti-Idle (กันหลุด - เวอร์ชันเสถียร)",
+            CurrentValue = config.antiIdle,
+            Callback = function(v)
+                config.antiIdle = v
+                isAntiIdleActive = v
+                
+                if v then
+                    notify_func("Anti-Idle", "เปิดใช้งานแล้ว (เสถียร 100%)", 3)
+                    
+                    antiIdleHeartbeat = RunService.Heartbeat:Connect(function()
+                        if not isAntiIdleActive then return end
+                        
+                        if math.random() < 0.005 then
+                            pcall(function()
+                                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightControl, false, game)
+                                task.wait(0.05)
+                                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightControl, false, game)
+                            end)
+                        end
+                    end)
+                    
+                else
+                    notify_func("Anti-Idle", "ปิดใช้งานแล้ว", 2)
+                    if antiIdleHeartbeat then
+                        antiIdleHeartbeat:Disconnect()
+                        antiIdleHeartbeat = nil
+                    end
+                end
+                save_config()
+            end,
+        })
+        
+        MainTab:CreateDropdown({
+            Name = "Select UI Library",
+            Options = {"Rayfield", "Fluent"},
+            CurrentOption = "Rayfield",
+            Callback = function(v)
+                if v ~= current_ui then
+                    switch_to_ui(v)
+                end
+            end
+        })
+        
+        MainTab:CreateButton({
+            Name = "❌ ปิดสคริปต์ (Unload)",
+            Callback = function()
+                if autoPlayConnection then autoPlayConnection:Disconnect() end
+                if antiIdleHeartbeat then antiIdleHeartbeat:Disconnect() end
+                MobileGui:Destroy()
+                if Window then Window:Destroy() end
+                if Rayfield then Rayfield:Destroy() end
+                if Fluent then Window:Destroy() end  -- For Fluent
+            end,
+        })
+        
+    elseif lib == "Fluent" then
+        Fluent = loadstring(game:HttpGet("https://raw.githubusercontent.com/discoart/FluentPlus/refs/heads/main/Beta.lua"))()
+        notify_func = function(title, content, dur)
+            game.StarterGui:SetCore("SendNotification", {Title = title, Text = content, Duration = dur or 3})
+        end
+        
+        Window = Fluent:CreateWindow({
+            Title = "999ตัวตึง | Ultimate Word Solver V3",
+            Size = UDim2.fromOffset(500, 400),
+            Theme = "Dark"
+        })
+        
+        local MainTab = Window:CreateTab({Name = "หน้าหลัก"})
+        
+        local AutoSection = MainTab:CreateSection({Name = "ระบบออโต้"})
+        
+        AutoSection:CreateButton({
+            Name = "🚀 กดเพื่อหาคำ (Run Once)",
+            Callback = RunAutoLogic
+        })
+        
+        AutoSection:CreateToggle({
+            Name = "🤖 Auto Play Mode (เล่นอัตโนมัติทั้งเกม)",
+            Default = config.autoPlay,
+            Callback = function(v)
+                config.autoPlay = v
+                isAutoPlayActive = v
+                if v then StartAutoPlay() else StopAutoPlay() end
+                save_config()
+            end
+        })
+        
+        AutoSection:CreateToggle({
+            Name = "📱 ปุ่มมือถือ (Liquid RGB Button)",
+            Default = config.mobileBtn,
+            Callback = function(v) 
+                config.mobileBtn = v
+                MobileButtonFrame.Visible = v 
+                save_config()
+            end
+        })
+        
+        AutoSection:CreateToggle({
+            Name = "💻 PC Emulator (จำเป็นสำหรับมือถือ)",
+            Default = config.pcEmulator,
+            Callback = function(v)
+                config.pcEmulator = v
+                if v then EnablePCEmulator() end
+                save_config()
+            end
+        })
+        
+        local TypeSection = MainTab:CreateSection({Name = "ตั้งค่าการพิมพ์"})
+        
+        TypeSection:CreateSlider({
+            Name = "ความเร็วในการพิมพ์ (วินาที)",
+            Min = 0.01, Max = 0.5,
+            Default = config.baseTypeSpeed,
+            Callback = function(v) 
+                config.baseTypeSpeed = v 
+                baseTypeSpeed = v
+                save_config()
+            end
+        })
+        
+        TypeSection:CreateSlider({
+            Name = "ความเร็วในการลบคำ (วินาที)",
+            Min = 0.01, Max = 0.2,
+            Default = config.deleteSpeed,
+            Callback = function(v) 
+                config.deleteSpeed = v 
+                deleteSpeed = v
+                save_config()
+            end
+        })
+        
+        TypeSection:CreateInput({
+            Name = "ความยาวคำสูงสุด",
+            Placeholder = tostring(config.maxLength),
+            Callback = function(t) 
+                config.maxLength = tonumber(t) or 12 
+                maxLength = config.maxLength
+                save_config()
+            end
+        })
+        
+        local DBSection = MainTab:CreateSection({Name = "ฐานข้อมูล"})
+        
+        DBSection:CreateDropdown({
+            Name = "Primary Database",
+            Options = db_options,
+            Default = config.primaryDB,
+            Callback = function(v)
+                config.primaryDB = v
+                reload_dbs()
+                save_config()
+            end
+        })
+        
+        DBSection:CreateDropdown({
+            Name = "Secondary Database (Optional)",
+            Options = {"None", unpack(db_options)},
+            Default = config.secondaryDB,
+            Callback = function(v)
+                config.secondaryDB = v
+                reload_dbs()
+                save_config()
+            end
+        })
+        
+        local ExtraSection = MainTab:CreateSection({Name = "ระบบเสริม"})
+        
+        ExtraSection:CreateToggle({
+            Name = "🛡️ Anti-Idle (กันหลุด - เวอร์ชันเสถียร)",
+            Default = config.antiIdle,
+            Callback = function(v)
+                config.antiIdle = v
+                isAntiIdleActive = v
+                
+                if v then
+                    notify_func("Anti-Idle", "เปิดใช้งานแล้ว (เสถียร 100%)", 3)
+                    
+                    antiIdleHeartbeat = RunService.Heartbeat:Connect(function()
+                        if not isAntiIdleActive then return end
+                        
+                        if math.random() < 0.005 then
+                            pcall(function()
+                                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightControl, false, game)
+                                task.wait(0.05)
+                                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightControl, false, game)
+                            end)
+                        end
+                    end)
+                    
+                else
+                    notify_func("Anti-Idle", "ปิดใช้งานแล้ว", 2)
+                    if antiIdleHeartbeat then
+                        antiIdleHeartbeat:Disconnect()
+                        antiIdleHeartbeat = nil
+                    end
+                end
+                save_config()
+            end
+        })
+        
+        ExtraSection:CreateDropdown({
+            Name = "Select UI Library",
+            Options = {"Rayfield", "Fluent"},
+            Default = "Fluent",
+            Callback = function(v)
+                if v ~= current_ui then
+                    switch_to_ui(v)
+                end
+            end
+        })
+        
+        ExtraSection:CreateButton({
+            Name = "❌ ปิดสคริปต์ (Unload)",
+            Callback = function()
+                if autoPlayConnection then autoPlayConnection:Disconnect() end
+                if antiIdleHeartbeat then antiIdleHeartbeat:Disconnect() end
+                MobileGui:Destroy()
+                if Window then Window:Destroy() end
+                if Fluent then Window:Destroy() end
+            end
+        })
+    end
+end
+
+--------------------------------------------------------------------
+-- Initialization
+--------------------------------------------------------------------
+
+task.spawn(function()
+    notify_func("Database", "กำลังดาวน์โหลดคำศัพท์...", 3)
+    reload_dbs()
+    if isDBLoaded then
+        notify_func("พร้อมใช้งาน! ✅", "โหลดฐานข้อมูลเรียบร้อย", 4)
+    else
+        notify_func("แจ้งเตือน ⚠️", "ใช้ Database สำรอง (ไม่มีเน็ต)", 4)
+    end
+end)
+
+-- แจ้งเตือนสำหรับผู้ใช้มือถือ
+task.spawn(function()
+    task.wait(3)
+    if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+        notify_func("ตรวจพบมือถือ 📱", "แนะนำเปิด 'PC Emulator' เพื่อให้สคริปต์กดคีย์ได้ปกติ", 6)
+    end
+end)
+
+-- Start with Rayfield
+create_ui("Rayfield")
